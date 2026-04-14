@@ -473,8 +473,11 @@ for i, row in enumerate(unmapped):
             WHERE node_id = '{proposal["v2_node_id"]}'
         """).collect()
 
-        trace = mlflow.get_last_active_trace()
-        trace_id = trace.info.request_id if trace else None
+        try:
+            trace = mlflow.get_last_active_trace()
+            trace_id = trace.info.request_id if trace else None
+        except AttributeError:
+            trace_id = None
 
         proposals.append({
             "v1_node_id": row.node_id,
