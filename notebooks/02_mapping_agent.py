@@ -339,6 +339,22 @@ import mlflow.deployments
 client = mlflow.deployments.get_deploy_client("databricks")
 
 
+def _get(obj, key, default=None):
+    """Get a value from a dict or object attribute."""
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
+def _to_dict(obj):
+    """Convert a response object or dict to a plain dict."""
+    if isinstance(obj, dict):
+        return obj
+    if hasattr(obj, "to_dict"):
+        return obj.to_dict()
+    return dict(obj)
+
+
 @mlflow.trace(name="mapping_agent_turn")
 def run_agent_turn(messages: list[dict]) -> tuple[list[dict], str]:
     """Run one turn of the agent loop. Returns updated messages and final text."""
@@ -351,14 +367,21 @@ def run_agent_turn(messages: list[dict]) -> tuple[list[dict], str]:
         },
     )
 
-    assistant_msg = response.choices[0].message
-    messages.append(assistant_msg.to_dict())
+    # Handle both object-style and dict-style responses
+    choices = _get(response, "choices", [])
+    choice = choices[0] if choices else {}
+    assistant_msg = _get(choice, "message", choice)
+
+    messages.append(_to_dict(assistant_msg))
 
     # If the LLM wants to call tools, execute them
-    if assistant_msg.tool_calls:
-        for tool_call in assistant_msg.tool_calls:
-            fn_name = tool_call.function.name
-            fn_args = json.loads(tool_call.function.arguments)
+    tool_calls = _get(assistant_msg, "tool_calls")
+    if tool_calls:
+        for tc in tool_calls:
+            fn_obj = _get(tc, "function", {})
+            fn_name = _get(fn_obj, "name")
+            fn_args = json.loads(_get(fn_obj, "arguments", "{}"))
+            tc_id = _get(tc, "id", "")
 
             with mlflow.start_span(name=f"tool:{fn_name}") as span:
                 span.set_inputs(fn_args)
@@ -367,14 +390,15 @@ def run_agent_turn(messages: list[dict]) -> tuple[list[dict], str]:
 
             messages.append({
                 "role": "tool",
-                "tool_call_id": tool_call.id,
+                "tool_call_id": tc_id,
                 "content": result,
             })
 
         # Get the LLM's response after tool results
         return run_agent_turn(messages)
 
-    return messages, assistant_msg.content
+    content = _get(assistant_msg, "content", "")
+    return messages, content
 
 # COMMAND ----------
 
