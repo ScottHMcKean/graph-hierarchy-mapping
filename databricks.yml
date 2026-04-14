@@ -15,12 +15,7 @@ resources:
         - task_key: setup
           notebook_task:
             notebook_path: notebooks/01_data_setup.py
-          new_cluster:
-            spark_version: "15.4.x-ml-scala2.12"
-            node_type_id: "i3.xlarge"
-            num_workers: 0
-            spark_conf:
-              spark.master: "local[*]"
+            warehouse_id: ""
 
     mapping_agent:
       name: "[Graph Mapping] 02 - Mapping Agent"
@@ -28,12 +23,7 @@ resources:
         - task_key: agent
           notebook_task:
             notebook_path: notebooks/02_mapping_agent.py
-          new_cluster:
-            spark_version: "15.4.x-ml-scala2.12"
-            node_type_id: "i3.xlarge"
-            num_workers: 0
-            spark_conf:
-              spark.master: "local[*]"
+            warehouse_id: ""
 
 targets:
   dev:
