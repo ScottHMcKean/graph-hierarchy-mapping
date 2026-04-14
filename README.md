@@ -43,7 +43,7 @@ A Databricks demo for **hierarchy navigation + agent-based mapping** using Graph
 
 ```bash
 # Clone and deploy
-git clone https://github.com/your-org/graph-hierarchy-mapping.git
+git clone https://github.com/ScottHMcKean/graph-hierarchy-mapping.git
 cd graph-hierarchy-mapping
 databricks bundle deploy -t dev
 
@@ -59,7 +59,14 @@ databricks bundle deploy -t dev  # app deploys automatically
 
 ## Dataset
 
-[Google Product Taxonomy](https://www.google.com/basepages/producttype/taxonomy-with-ids.en-US.txt) -- a free, public, versioned product classification with ~6,600 categories and 3-5 hierarchy levels. We use two versions to demonstrate mapping between an "old" and "new" taxonomy.
+Two real versions of the [Google Product Taxonomy](https://www.google.com/basepages/producttype/taxonomy-with-ids.en-US.txt):
+
+| Version | Date | Categories | Source |
+|---------|------|-----------|--------|
+| V1 | 2015-02-19 | 5,427 | Wayback Machine archive |
+| V2 | 2021-09-21 | 5,595 | Current Google release |
+
+Real taxonomy evolution over 6 years: 5,404 exact matches, 23 removed/renamed categories (e.g. "Football" -> "American Football"), 191 new categories added. The unmapped categories are the interesting ones -- renames, splits, and restructurings that the agent must resolve.
 
 ## Requirements
 
