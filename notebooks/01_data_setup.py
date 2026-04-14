@@ -238,10 +238,10 @@ spark.sql(f"""
         confidence DOUBLE,
         reasoning STRING,
         method STRING,
-        status STRING DEFAULT 'pending',
+        status STRING,
         reviewer_note STRING,
         trace_id STRING,
-        created_at TIMESTAMP DEFAULT current_timestamp(),
+        created_at TIMESTAMP,
         reviewed_at TIMESTAMP
     )
 """)
@@ -253,16 +253,26 @@ spark.sql(f"""
 
 # COMMAND ----------
 
-from graphframes import GraphFrame
+try:
+    from graphframes import GraphFrame
+    GRAPHFRAMES_AVAILABLE = True
+except ImportError:
+    GRAPHFRAMES_AVAILABLE = False
+    print("GraphFrames not available (serverless compute).")
+    print("Skipping batch graph analytics. Run on ML Runtime for full demo.")
 
-gf_nodes = spark.table(f"{CATALOG}.{SCHEMA}.nodes").withColumnRenamed("node_id", "id")
-gf_edges = spark.table(f"{CATALOG}.{SCHEMA}.edges") \
-    .filter("relationship_type = 'PARENT_OF'") \
-    .withColumnRenamed("source_id", "src") \
-    .withColumnRenamed("target_id", "dst")
+# COMMAND ----------
 
-g = GraphFrame(gf_nodes, gf_edges)
-print(f"Graph: {g.vertices.count()} vertices, {g.edges.count()} edges")
+if GRAPHFRAMES_AVAILABLE:
+    gf_nodes = spark.table(f"{CATALOG}.{SCHEMA}.nodes") \
+        .withColumnRenamed("node_id", "id")
+    gf_edges = spark.table(f"{CATALOG}.{SCHEMA}.edges") \
+        .filter("relationship_type = 'PARENT_OF'") \
+        .withColumnRenamed("source_id", "src") \
+        .withColumnRenamed("target_id", "dst")
+
+    g = GraphFrame(gf_nodes, gf_edges)
+    print(f"Graph: {g.vertices.count()} vertices, {g.edges.count()} edges")
 
 # COMMAND ----------
 
@@ -273,15 +283,16 @@ print(f"Graph: {g.vertices.count()} vertices, {g.edges.count()} edges")
 
 # COMMAND ----------
 
-sc.setCheckpointDir("/tmp/graphframes_checkpoints")
-components = g.connectedComponents()
+if GRAPHFRAMES_AVAILABLE:
+    sc.setCheckpointDir("/tmp/graphframes_checkpoints")
+    components = g.connectedComponents()
 
-display(
-    components.groupBy("component", "taxonomy_version")
-    .count()
-    .orderBy("count", ascending=False)
-    .limit(10)
-)
+    display(
+        components.groupBy("component", "taxonomy_version")
+        .count()
+        .orderBy("count", ascending=False)
+        .limit(10)
+    )
 
 # COMMAND ----------
 
@@ -292,20 +303,29 @@ display(
 
 # COMMAND ----------
 
-pr = g.pageRank(resetProbability=0.15, maxIter=20)
+if GRAPHFRAMES_AVAILABLE:
+    pr = g.pageRank(resetProbability=0.15, maxIter=20)
 
-display(
-    pr.vertices
-    .select("id", "name", "taxonomy_version", "level", "pagerank")
-    .orderBy("pagerank", ascending=False)
-    .limit(20)
-)
+    display(
+        pr.vertices
+        .select("id", "name", "taxonomy_version", "level", "pagerank")
+        .orderBy("pagerank", ascending=False)
+        .limit(20)
+    )
 
 # COMMAND ----------
 
-# Save enriched nodes
-enriched = pr.vertices.join(components.select("id", "component"), "id")
-enriched.write.mode("overwrite").saveAsTable(f"{CATALOG}.{SCHEMA}.nodes_enriched")
+# Save enriched nodes (or just copy nodes if GraphFrames unavailable)
+if GRAPHFRAMES_AVAILABLE:
+    enriched = pr.vertices.join(components.select("id", "component"), "id")
+    enriched.write.mode("overwrite").saveAsTable(
+        f"{CATALOG}.{SCHEMA}.nodes_enriched"
+    )
+else:
+    spark.table(f"{CATALOG}.{SCHEMA}.nodes") \
+        .withColumnRenamed("node_id", "id") \
+        .write.mode("overwrite") \
+        .saveAsTable(f"{CATALOG}.{SCHEMA}.nodes_enriched")
 
 # COMMAND ----------
 
