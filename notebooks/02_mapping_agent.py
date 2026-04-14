@@ -29,6 +29,11 @@ from pyspark.sql import functions as F
 
 mlflow.tracing.enable()
 
+
+def _sq(val: str) -> str:
+    """Escape single quotes for safe SQL interpolation."""
+    return str(val).replace("'", "''")
+
 # COMMAND ----------
 
 # MAGIC %md
@@ -45,7 +50,7 @@ def get_node_context(node_id: str) -> str:
     node = spark.sql(f"""
         SELECT node_id, name, full_path, level, taxonomy_version
         FROM {CATALOG}.{SCHEMA}.nodes
-        WHERE node_id = '{node_id}'
+        WHERE node_id = '{_sq(node_id)}'
     """).collect()
 
     if not node:
@@ -467,10 +472,10 @@ for i, row in enumerate(unmapped):
     proposal = map_single_category(row.node_id, row.name, row.full_path)
 
     if proposal and proposal.get("v2_node_id"):
-        # Look up v2 name and path
+        # Look up v2 name and path (sanitize to prevent SQL injection)
         v2_info = spark.sql(f"""
             SELECT name, full_path FROM {CATALOG}.{SCHEMA}.nodes
-            WHERE node_id = '{proposal["v2_node_id"]}'
+            WHERE node_id = '{_sq(proposal["v2_node_id"])}'
         """).collect()
 
         try:
