@@ -3,10 +3,18 @@ command:
   - run
   - app.py
   - --server.port
-  - "8501"
+  - "8000"
 
 env:
   - name: CATALOG
-    value: main
+    value: shm
   - name: SCHEMA
-    value: graph_hierarchy_demo
+    value: graph
+  - name: MLFLOW_EXPERIMENT_NAME
+    value: /Shared/taxonomy-mapping-agent
+
+resources:
+  - name: sql-warehouse
+    sql_warehouse:
+      id: "b5d9b3c3fc993bf3"
+      permission: CAN_USE

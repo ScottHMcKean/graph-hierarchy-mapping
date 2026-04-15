@@ -3,11 +3,17 @@ bundle:
 
 variables:
   catalog:
-    default: main
+    default: shm
   schema:
-    default: graph_hierarchy_demo
+    default: graph
 
 resources:
+  apps:
+    review_app:
+      name: "graph-mapping-review-${bundle.target}"
+      description: "Review agent-proposed taxonomy mappings"
+      source_code_path: ./app
+
   jobs:
     data_setup:
       name: "[Graph Mapping] 01 - Data Setup"

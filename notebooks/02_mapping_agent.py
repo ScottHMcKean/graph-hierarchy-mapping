@@ -14,8 +14,8 @@
 # COMMAND ----------
 
 # Configuration -- must match notebook 01
-CATALOG = "main"
-SCHEMA = "graph_hierarchy_demo"
+CATALOG = "shm"
+SCHEMA = "graph"
 VS_ENDPOINT = None  # Set to match notebook 01
 LLM_ENDPOINT = "databricks-meta-llama-3-3-70b-instruct"
 BATCH_SIZE = 20  # Number of unmapped categories to process per run
@@ -29,6 +29,9 @@ from pyspark.sql import functions as F
 
 mlflow.tracing.enable()
 
+EXPERIMENT_NAME = "/Shared/taxonomy-mapping-agent"
+mlflow.set_experiment(EXPERIMENT_NAME)
+
 
 def _sq(val: str) -> str:
     """Escape single quotes for safe SQL interpolation."""
@@ -41,17 +44,22 @@ def _sq(val: str) -> str:
 
 # COMMAND ----------
 
+@mlflow.trace(name="tool:get_node_context", span_type="TOOL")
 def get_node_context(node_id: str) -> str:
     """Get full context for a node: ancestors, siblings, and children.
 
     Uses recursive CTEs to walk the hierarchy in both directions.
     """
     # Get the node itself
-    node = spark.sql(f"""
+    node_sql = f"""
         SELECT node_id, name, full_path, level, taxonomy_version
         FROM {CATALOG}.{SCHEMA}.nodes
         WHERE node_id = '{_sq(node_id)}'
-    """).collect()
+    """
+    with mlflow.start_span(name="sql:node_lookup") as span:
+        span.set_attribute("sql.query", node_sql)
+        node = spark.sql(node_sql).collect()
+        span.set_attribute("sql.row_count", len(node))
 
     if not node:
         return f"Node '{node_id}' not found."
@@ -59,7 +67,7 @@ def get_node_context(node_id: str) -> str:
     n = node[0]
 
     # Get ancestors (walk up via PARENT_OF)
-    ancestors = spark.sql(f"""
+    ancestors_sql = f"""
         WITH RECURSIVE ancestors AS (
             SELECT e.source_id as node_id, 1 as depth
             FROM {CATALOG}.{SCHEMA}.edges e
@@ -79,20 +87,30 @@ def get_node_context(node_id: str) -> str:
         FROM ancestors a
         JOIN {CATALOG}.{SCHEMA}.nodes n ON n.node_id = a.node_id
         ORDER BY a.depth DESC
-    """).collect()
+    """
+    with mlflow.start_span(name="sql:ancestors_cte") as span:
+        span.set_attribute("sql.query", ancestors_sql)
+        ancestors = spark.sql(ancestors_sql).collect()
+        span.set_attribute("sql.row_count", len(ancestors))
+        span.set_outputs({"ancestors": [a.name for a in ancestors]})
 
     # Get children (direct)
-    children = spark.sql(f"""
+    children_sql = f"""
         SELECT n.name, n.level
         FROM {CATALOG}.{SCHEMA}.edges e
         JOIN {CATALOG}.{SCHEMA}.nodes n ON n.node_id = e.target_id
         WHERE e.source_id = '{node_id}'
           AND e.relationship_type = 'PARENT_OF'
         ORDER BY n.name
-    """).collect()
+    """
+    with mlflow.start_span(name="sql:children") as span:
+        span.set_attribute("sql.query", children_sql)
+        children = spark.sql(children_sql).collect()
+        span.set_attribute("sql.row_count", len(children))
+        span.set_outputs({"children": [c.name for c in children[:10]]})
 
     # Get siblings (same parent)
-    siblings = spark.sql(f"""
+    siblings_sql = f"""
         SELECT n2.name, n2.node_id
         FROM {CATALOG}.{SCHEMA}.edges e1
         JOIN {CATALOG}.{SCHEMA}.edges e2
@@ -104,7 +122,12 @@ def get_node_context(node_id: str) -> str:
           AND n2.node_id != '{node_id}'
         ORDER BY n2.name
         LIMIT 10
-    """).collect()
+    """
+    with mlflow.start_span(name="sql:siblings") as span:
+        span.set_attribute("sql.query", siblings_sql)
+        siblings = spark.sql(siblings_sql).collect()
+        span.set_attribute("sql.row_count", len(siblings))
+        span.set_outputs({"siblings": [s.name for s in siblings[:10]]})
 
     lines = [
         f"Node: {n.name} (ID: {n.node_id}, Version: {n.taxonomy_version})",
@@ -122,6 +145,7 @@ def get_node_context(node_id: str) -> str:
     return "\n".join(lines)
 
 
+@mlflow.trace(name="tool:search_v2_candidates", span_type="TOOL")
 def search_v2_candidates(v1_name: str, v1_path: str, limit: int = 5) -> str:
     """Find candidate v2 categories that might match a v1 category.
 
@@ -132,12 +156,15 @@ def search_v2_candidates(v1_name: str, v1_path: str, limit: int = 5) -> str:
         vsc = VectorSearchClient()
         index = vsc.get_index(VS_ENDPOINT, f"{CATALOG}.{SCHEMA}.nodes_vs_index")
 
-        results = index.similarity_search(
-            query_text=v1_path,
-            columns=["node_id", "name", "full_path", "taxonomy_version", "level"],
-            num_results=limit * 2,
-            filters={"taxonomy_version": ("=", "2")},
-        )
+        with mlflow.start_span(name="vector_search:similarity") as span:
+            span.set_attribute("vs.query_text", v1_path)
+            span.set_attribute("vs.num_results", limit * 2)
+            results = index.similarity_search(
+                query_text=v1_path,
+                columns=["node_id", "name", "full_path", "taxonomy_version", "level"],
+                num_results=limit * 2,
+                filters={"taxonomy_version": ("=", "2")},
+            )
 
         candidates = []
         for row in results.get("result", {}).get("data_array", []):
@@ -163,28 +190,38 @@ def search_v2_candidates(v1_name: str, v1_path: str, limit: int = 5) -> str:
 
     conditions = " OR ".join(f"LOWER(name) LIKE '%{w.lower()}%'" for w in words[:3])
 
-    candidates = spark.sql(f"""
+    fuzzy_sql = f"""
         SELECT node_id, name, full_path, level
         FROM {CATALOG}.{SCHEMA}.nodes
         WHERE taxonomy_version = '2'
           AND ({conditions})
         ORDER BY level, name
         LIMIT {limit}
-    """).collect()
+    """
+    with mlflow.start_span(name="sql:fuzzy_match") as span:
+        span.set_attribute("sql.query", fuzzy_sql)
+        candidates = spark.sql(fuzzy_sql).collect()
+        span.set_attribute("sql.row_count", len(candidates))
+        span.set_outputs({"candidates": [c.full_path for c in candidates]})
 
     if not candidates:
         # Try matching by parent path
         v1_parts = v1_path.split(" > ")
         if len(v1_parts) > 1:
             parent_name = v1_parts[-2]
-            candidates = spark.sql(f"""
+            parent_sql = f"""
                 SELECT node_id, name, full_path, level
                 FROM {CATALOG}.{SCHEMA}.nodes
                 WHERE taxonomy_version = '2'
                   AND LOWER(full_path) LIKE '%{parent_name.lower()}%'
                 ORDER BY level DESC
                 LIMIT {limit}
-            """).collect()
+            """
+            with mlflow.start_span(name="sql:parent_path_match") as span:
+                span.set_attribute("sql.query", parent_sql)
+                candidates = spark.sql(parent_sql).collect()
+                span.set_attribute("sql.row_count", len(candidates))
+                span.set_outputs({"candidates": [c.full_path for c in candidates]})
 
     lines = ["SQL fuzzy-match candidates:"]
     for c in candidates:
@@ -193,9 +230,10 @@ def search_v2_candidates(v1_name: str, v1_path: str, limit: int = 5) -> str:
     return "\n".join(lines) if candidates else "No candidates found."
 
 
+@mlflow.trace(name="tool:get_unmapped_v1", span_type="TOOL")
 def get_unmapped_v1(limit: int = 10) -> str:
     """List v1 categories that don't have a MAPS_TO edge yet."""
-    unmapped = spark.sql(f"""
+    unmapped_sql = f"""
         SELECT n.node_id, n.name, n.full_path, n.level
         FROM {CATALOG}.{SCHEMA}.nodes n
         WHERE n.taxonomy_version = '1'
@@ -211,7 +249,11 @@ def get_unmapped_v1(limit: int = 10) -> str:
           )
         ORDER BY n.level, n.name
         LIMIT {limit}
-    """).collect()
+    """
+    with mlflow.start_span(name="sql:unmapped_v1") as span:
+        span.set_attribute("sql.query", unmapped_sql)
+        unmapped = spark.sql(unmapped_sql).collect()
+        span.set_attribute("sql.row_count", len(unmapped))
 
     if not unmapped:
         return "All v1 categories are mapped or have pending proposals."
@@ -388,10 +430,7 @@ def run_agent_turn(messages: list[dict]) -> tuple[list[dict], str]:
             fn_args = json.loads(_get(fn_obj, "arguments", "{}"))
             tc_id = _get(tc, "id", "")
 
-            with mlflow.start_span(name=f"tool:{fn_name}") as span:
-                span.set_inputs(fn_args)
-                result = TOOL_FUNCTIONS[fn_name](**fn_args)
-                span.set_outputs({"result": result[:500]})
+            result = TOOL_FUNCTIONS[fn_name](**fn_args)
 
             messages.append({
                 "role": "tool",
@@ -508,8 +547,23 @@ print(f"\nTotal proposals: {len(proposals)}")
 # Write proposals to Delta
 if proposals:
     from pyspark.sql.functions import current_timestamp
+    from pyspark.sql.types import DoubleType, StringType, StructField, StructType
 
-    proposals_df = spark.createDataFrame(proposals)
+    proposal_schema = StructType([
+        StructField("v1_node_id", StringType(), True),
+        StructField("v2_node_id", StringType(), True),
+        StructField("v1_name", StringType(), True),
+        StructField("v2_name", StringType(), True),
+        StructField("v1_path", StringType(), True),
+        StructField("v2_path", StringType(), True),
+        StructField("confidence", DoubleType(), True),
+        StructField("reasoning", StringType(), True),
+        StructField("method", StringType(), True),
+        StructField("status", StringType(), True),
+        StructField("trace_id", StringType(), True),
+    ])
+
+    proposals_df = spark.createDataFrame(proposals, schema=proposal_schema)
     proposals_df = proposals_df.withColumn("created_at", current_timestamp())
 
     proposals_df.write.mode("append").saveAsTable(

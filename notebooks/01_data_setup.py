@@ -21,8 +21,8 @@
 # COMMAND ----------
 
 # Configuration
-CATALOG = "main"
-SCHEMA = "graph_hierarchy_demo"
+CATALOG = "shm"
+SCHEMA = "graph"
 VS_ENDPOINT = None  # Set to your Vector Search endpoint name to enable semantic matching
 
 # Taxonomy files -- bundled in data/ directory
